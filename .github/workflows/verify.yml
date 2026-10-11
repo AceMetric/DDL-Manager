@@ -22,6 +22,19 @@ jobs:
         run: zsh verify-homework.sh
       - name: Official login protection
         run: zsh verify-github-cli.sh
+      - name: Recovery, diagnostics and storage
+        run: zsh verify-quality.sh
+      - name: Recognition and review state
+        run: zsh verify-recognition.sh
+      - name: Forms and course UI
+        run: |
+          zsh verify-forms.sh
+          zsh verify-course-ui.sh
+      - name: Isolated graphical regressions (PASS required)
+        run: |
+          zsh verify-hybrid-ui.sh
+          AM_UI_TEST=SkillExchange zsh verify-hybrid-ui.sh
+          AM_UI_TEST=QualityUsage zsh verify-hybrid-ui.sh
       - name: Compile local image privacy scanner
         run: >-
           clang -fobjc-arc -Wall -Wextra -Werror -mmacosx-version-min=13.0

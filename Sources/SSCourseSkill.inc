@@ -61,15 +61,19 @@
     __weak typeof(self) owner=self;dispatch_source_set_event_handler(source,^{[owner pollSkillResults:nil];});dispatch_source_set_cancel_handler(source,^{close(descriptor);});[self.skillWatchers addObject:source];dispatch_resume(source);
 }
 - (void)startSkillReception {
-    if(self.preview || self.skillTimer)return;for(NSString *batch in self.skillJobs)[self watchSkillBatch:batch];
+    if(self.preview || self.skillTimer)return;[self cleanSkillJobs:NO];for(NSString *batch in self.skillJobs)[self watchSkillBatch:batch];
     __weak typeof(self) owner=self;self.skillTimer=[NSTimer scheduledTimerWithTimeInterval:3 repeats:YES block:^(NSTimer *timer){[owner pollSkillResults:nil];}];[self pollSkillResults:nil];
 }
 - (void)exportSkillContext:(id)sender {[self prepareSkill:NO];}
 - (void)exportAllSkillContext:(id)sender {[self prepareSkill:YES];}
 - (void)prepareSkill:(BOOL)all {
     if(self.preview || self.busy || self.operationsPaused)return;NSArray *courses=[self selectedSkillCourses];if(!courses)return;if(!courses.count){[self status:@"没有已就绪课程，请在“更多 → 调整助手课程”中选择。"];return;}
+    [self prepareSkillCourses:courses all:all manifest:nil];
+}
+- (void)prepareSkillCourses:(NSArray *)courses all:(BOOL)all manifest:(NSDictionary *)manifest {
+    if(!courses.count || self.busy || self.operationsPaused)return;
     NSDictionary *progress=self.skillProgress.copy;NSDate *started=NSDate.date;
-    [self work:@"准备中 · 正在读取新增老师材料…" forCourse:nil operation:^id(NSError **error){NSDictionary *scans=[self readSkillCourses:courses result:nil];NSMutableDictionary *exported=[SSSkillExport(courses,scans,progress,all) mutableCopy];exported[@"scans"]=scans;return exported;} completion:^(NSDictionary *exported,NSError *error){
+    [self work:@"准备中 · 正在读取新增老师材料…" forCourse:nil operation:^id(NSError **error){NSDictionary *scans=[self readSkillCourses:courses result:nil];if(manifest){NSMutableDictionary *limited=NSMutableDictionary.dictionary;for(NSDictionary *course in courses){NSString *fork=course[@"fork"];NSMutableDictionary *scan=[scans[fork] mutableCopy];NSMutableArray *documents=NSMutableArray.array;for(NSDictionary *doc in scan[@"documents"])if(manifest[SSSkillProgressKey(fork,doc)])[documents addObject:doc];scan[@"documents"]=documents;if(scan)limited[fork]=scan;}scans=limited;}NSMutableDictionary *exported=[SSSkillExport(courses,scans,progress,all) mutableCopy];exported[@"scans"]=scans;return exported;} completion:^(NSDictionary *exported,NSError *error){
         if(!exported){[self showError:error];return;}NSMutableArray *issues=NSMutableArray.array;for(NSDictionary *course in courses)if(exported[@"scans"][course[@"fork"]][@"error"])[issues addObject:[NSString stringWithFormat:@"%@：%@",[course[@"fork"] lastPathComponent],exported[@"scans"][course[@"fork"]][@"error"]]];
         if(![exported[@"context"][@"documents"] count]){[self status:issues.count ? [issues componentsJoinedByString:@"；"]:@"没有尚未识别的新增材料，无需交给助手。可在“更多”重新分析全部。"];return;}
         NSMutableDictionary *reports=self.reports.mutableCopy ?: NSMutableDictionary.dictionary;[reports addEntriesFromDictionary:exported[@"scans"]];self.reports=reports;
@@ -96,12 +100,20 @@
 - (void)copySkillBatch:(NSString *)batch {
     NSURL *folder=[self skillFolder:batch];if(!folder)return;NSString *prompt=[NSString stringWithFormat:@"读取 %@ 中的 SKILL.md 和 materials.local.json，分析本批所有课程，将结果先写入 results.local.json.tmp，完成后原子重命名为同目录 results.local.json。应用会自动接回。只生成识别建议，不修改应用任务库或执行课程 Git 操作。",folder.path];[NSPasteboard.generalPasteboard clearContents];[NSPasteboard.generalPasteboard setString:prompt forType:NSPasteboardTypeString];
 }
-- (void)showSkillJobs:(id)sender {
-    if(self.preview)return;NSArray *ids=[self.skillJobs.allKeys sortedArrayUsingComparator:^NSComparisonResult(NSString *a,NSString *b){return [self.skillJobs[b][@"date"] compare:self.skillJobs[a][@"date"]];}];
-    NSAlert *alert=NSAlert.new;alert.messageText=@"助手识别批次";NSMutableArray *lines=NSMutableArray.array;for(NSString *batch in ids){NSDictionary *job=self.skillJobs[batch];[lines addObject:[NSString stringWithFormat:@"%@ · %@ · %@ 份文档\n%@",DDLFormatDate(job[@"date"],@"M/d HH:mm"),job[@"state"],job[@"count"],job[@"message"] ?: @""]];}
-    NSScrollView *scroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(0,0,480,240)];scroll.hasVerticalScroller=YES;NSTextView *text=[[NSTextView alloc] initWithFrame:scroll.bounds];text.editable=NO;text.font=[NSFont systemFontOfSize:13];text.string=lines.count ? [lines componentsJoinedByString:@"\n\n"]:@"还没有批次。点击“助手识别”准备材料。";scroll.documentView=text;alert.accessoryView=scroll;
-    [alert addButtonWithTitle:@"关闭"];if(ids.count){[alert addButtonWithTitle:@"复制最近批次指令"];[alert addButtonWithTitle:@"显示最近材料"];[alert addButtonWithTitle:@"重试需处理批次"];[alert addButtonWithTitle:@"打开助手"];}
-    NSInteger answer=[alert runModal];if(answer==NSAlertSecondButtonReturn)[self copySkillBatch:ids.firstObject];else if(answer==NSAlertThirdButtonReturn){NSURL *folder=[self skillFolder:ids.firstObject];if(folder)[NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[folder]];}else if(answer==NSAlertThirdButtonReturn+1){for(NSString *batch in ids)if([self.skillJobs[batch][@"state"] isEqual:@"需处理"]){NSMutableDictionary *job=[self.skillJobs[batch] mutableCopy];[job removeObjectForKey:@"fingerprint"];job[@"state"]=@"等待助手";self.skillJobs[batch]=job;}[self writeSkillState:NULL];[self pollSkillResults:nil];}else if(answer==NSAlertThirdButtonReturn+2){NSURL *app=[NSWorkspace.sharedWorkspace URLForApplicationWithBundleIdentifier:@"com.openai.codex"];if(app)[NSWorkspace.sharedWorkspace openApplicationAtURL:app configuration:NSWorkspaceOpenConfiguration.configuration completionHandler:nil];else [self status:@"请打开你使用的助手并粘贴指令；材料不会自动发送。"];}
+- (void)showSkillJobs:(id)sender {if(self.hasUnsavedReview && ![self resolveUnsavedReview])return;self.showingSkillJobs=YES;[self refreshPresentation];}
+- (void)cleanSkillJobs:(BOOL)all {
+    NSDate *cutoff=[NSDate dateWithTimeIntervalSinceNow:-30*86400];BOOL changed=NO;
+    for(NSString *batch in self.skillJobs.allKeys){NSDictionary *old=self.skillJobs[batch];if(![old[@"state"] isEqual:@"已接回"] || [old[@"cleaned"] boolValue] || (!all && [old[@"date"] compare:cutoff]!=NSOrderedAscending))continue;NSURL *folder=[self skillFolder:batch];NSError *error=nil;if(folder && (![NSFileManager.defaultManager fileExistsAtPath:folder.path] || [NSFileManager.defaultManager removeItemAtURL:folder error:&error])){NSMutableDictionary *job=old.mutableCopy;job[@"cleaned"]=@YES;self.skillJobs[batch]=job;changed=YES;}}
+    if(changed)[self writeSkillState:NULL];
+}
+- (void)skillJobAction:(NSString *)action batch:(NSString *)batch {
+    if([action isEqual:@"close"]){self.showingSkillJobs=NO;[self refreshPresentation];return;}if(self.busy || self.operationsPaused)return;
+    if([action isEqual:@"copy"])[self copySkillBatch:batch];
+    else if([action isEqual:@"reveal"]){NSURL *folder=[self skillFolder:batch];if(folder)[NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[folder]];}
+    else if([action isEqual:@"clean"]){[self cleanSkillJobs:YES];[self refreshPresentation];}
+    else if([action isEqual:@"retry"]){NSMutableDictionary *job=[self.skillJobs[batch] mutableCopy];if(job){[job removeObjectForKey:@"fingerprint"];job[@"state"]=@"等待助手";self.skillJobs[batch]=job;[self writeSkillState:NULL];[self pollSkillResults:nil];}}
+    else if([action isEqual:@"prepare-failed"]){NSMutableArray *courses=NSMutableArray.array;for(NSDictionary *course in self.courses)if([self.skillJobs[batch][@"courses"] containsObject:course[@"fork"]])[courses addObject:course.copy];[self prepareSkillCourses:courses all:NO manifest:self.skillBatches[batch]];}
+    else if([action isEqual:@"prepare"])[self prepareSkill:NO];
 }
 - (void)pollSkillResults:(id)sender {
     if(self.preview || self.busy || self.operationsPaused || self.hasUnsavedReview || self.hasSubmissionSheet)return;

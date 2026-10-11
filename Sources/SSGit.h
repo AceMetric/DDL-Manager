@@ -2,6 +2,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 @interface SSGit : NSObject
+@property(atomic) BOOL readsCancellable;
+@property(atomic) BOOL cancelledReads;
 /// Required before cloning, committing, merging or pushing. Rechecks GitHub ownership.
 @property (copy, nullable) void (^progress)(NSString *phase);
 /// Non-nil only for OAuth. Called after target validation; never used for legacy SSH.

@@ -72,3 +72,5 @@ BOOL SSWriteSecret(NSString *account, NSDictionary *value) {
 }
 
 void SSDeleteSecret(NSString *account) { SecItemDelete((__bridge CFDictionaryRef)KeychainQuery(account)); }
+
+#import "SSTaskStore.inc"

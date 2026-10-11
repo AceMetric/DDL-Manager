@@ -57,6 +57,10 @@ static NSButton *SSButton(NSString *text, id target, SEL action, NSRect frame) {
 @property NSButton *reviewButton;
 @property NSButton *setupButton;
 @property NSButton *recoveryButton;
+@property AMSkillJobsController *skillJobsController;
+@property BOOL showingSkillJobs;
+@property NSMutableDictionary *deferredScans;
+@property NSButton *cancelReadButton;
 @property NSProgressIndicator *progress;
 @property NSTextField *emptyLabel;
 @property NSMutableDictionary *statuses;
@@ -208,6 +212,9 @@ static NSButton *SSButton(NSString *text, id target, SEL action, NSRect frame) {
         }
     };
     [self addChildViewController:self.courseWorkspace];[root addSubview:self.courseWorkspace.view];
+    self.skillJobsController=AMSkillJobsController.new;[self addChildViewController:self.skillJobsController];[root addSubview:self.skillJobsController.view];self.skillJobsController.view.hidden=YES;
+    self.skillJobsController.actionHandler=^(NSString *action,NSString *batch){[owner skillJobAction:action batch:batch];};
+    self.cancelReadButton=SSButton(@"取消检查",self,@selector(cancelReadOperation:),NSZeroRect);[root addSubview:self.cancelReadButton];self.cancelReadButton.hidden=YES;
     [self layoutContent];
 }
 - (void)layoutContent {
@@ -234,6 +241,9 @@ static NSButton *SSButton(NSString *text, id target, SEL action, NSRect frame) {
     else { self.detail.enclosingScrollView.hidden = NO; self.search.hidden = NO; }
     self.courseWorkspace.view.hidden=self.inbox;self.courseWorkspace.view.frame=NSMakeRect(0,144,w,MAX(200,h-144));
     if(!self.inbox){self.table.enclosingScrollView.hidden=YES;self.detail.enclosingScrollView.hidden=YES;self.reviewButton.hidden=YES;self.typeButton.hidden=YES;self.emptyLabel.hidden=YES;}
+    self.skillJobsController.view.frame=NSMakeRect(0,144,w,MAX(240,h-144));self.skillJobsController.view.hidden=!self.showingSkillJobs;
+    if(self.showingSkillJobs){self.courseWorkspace.view.hidden=YES;self.reviewWorkspace.view.hidden=YES;}
+    self.cancelReadButton.frame=NSMakeRect(w-144,112,144,28);self.cancelReadButton.hidden=!self.busy || !self.git.readsCancellable;
     CGFloat available = w - 132; self.table.tableColumns[3].width = 96;
     NSArray *weights = @[@0.34, @0.28, @0.38];
     for (NSUInteger i = 0; i < 3; i++) self.table.tableColumns[i].width = MAX(72, available * [weights[i] doubleValue]);
@@ -242,6 +252,7 @@ static NSButton *SSButton(NSString *text, id target, SEL action, NSRect frame) {
     if (_inbox == inbox) return;
     NSString *oldKey = _inbox ? @"inbox" : @"courses";
     self.pageStates[oldKey] = @{@"fork":self.selectedFork ?: @"", @"query":self.query ?: @"", @"selection":self.selectedCandidateID ?: @"", @"scroll":@(self.table.enclosingScrollView.contentView.bounds.origin.y), @"section":@(self.sections.selectedSegment), @"type":@(self.typeFilter.indexOfSelectedItem), @"review":@(self.reviewFilter.indexOfSelectedItem)};
+    self.showingSkillJobs=NO;
     _inbox = inbox; NSDictionary *state = self.pageStates[inbox ? @"inbox" : @"courses"];
     self.selectedFork = [state[@"fork"] length] ? state[@"fork"] : nil; self.selectedCandidateID = state[@"selection"]; self.query = state[@"query"] ?: @""; self.search.stringValue = self.query;
     self.sections.selectedSegment = [state[@"section"] integerValue]; [self.typeFilter selectItemAtIndex:[state[@"type"] integerValue]]; [self.reviewFilter selectItemAtIndex:[state[@"review"] integerValue]];
@@ -405,6 +416,7 @@ static NSButton *SSButton(NSString *text, id target, SEL action, NSRect frame) {
     return records;
 }
 - (NSDictionary *)reviewSourceWithID:(NSString *)identifier {
+    for(NSString *fork in self.deferredScans){NSDictionary *scan=self.deferredScans[fork];for(NSDictionary *row in [(scan[@"candidates"] ?: @[]) arrayByAddingObjectsFromArray:scan[@"materials"] ?: @[]])if([row[@"id"] isEqual:identifier]){NSMutableDictionary *record=row.mutableCopy;if(self.kindOverrides[identifier])record[@"kind"]=self.kindOverrides[identifier];return record;}for(NSDictionary *row in self.candidates[fork])if([row[@"id"] isEqual:identifier])return nil;}
     // An imported source is still valid for editing. Pending status and active
     // page filters must never decide whether its source version is current.
     for (NSDictionary *course in self.courses) for (NSDictionary *record in [self discoveriesForFork:course[@"fork"]]) if ([record[@"id"] isEqual:identifier]) return record;
@@ -426,6 +438,7 @@ static NSButton *SSButton(NSString *text, id target, SEL action, NSRect frame) {
 }
 - (BOOL)selectCourseID:(NSString *)identifier {
     if(identifier && ![self savedCourse:@{@"fork":identifier}])return NO;
+    if(self.showingSkillJobs){self.showingSkillJobs=NO;[self refreshPresentation];}
     if([self.selectedFork isEqual:identifier] || (!identifier && !self.selectedFork))return YES;
     if(self.hasUnsavedReview && ![self resolveUnsavedReview])return NO;
     NSString *oldKey=[@"course:" stringByAppendingString:self.selectedFork ?: @"all"];
@@ -435,6 +448,7 @@ static NSButton *SSButton(NSString *text, id target, SEL action, NSRect frame) {
 }
 - (void)refreshPresentation {
     if (self.refreshing || !self.table) return; self.refreshing = YES;
+    if(!self.hasUnsavedReview && self.deferredScans.count){for(NSString *fork in self.deferredScans){NSDictionary *scan=self.deferredScans[fork];self.candidates[fork]=[self retainingSkill:self.candidates[fork] current:scan[@"candidates"] documents:scan[@"documents"]];self.materials[fork]=[self retainingSkill:self.materials[fork] current:scan[@"materials"] ?: @[] documents:scan[@"documents"]];}[self.deferredScans removeAllObjects];if(!self.preview)SSWritePlist(@"discoveries.plist",self.discoveryEnvelope,NULL);}
     NSDictionary *course = [self course]; NSString *key = self.selectedFork ?: @"all";
     NSDate *last = course[@"lastScan"];
     NSString *context = course ? [NSString stringWithFormat:@"%@ · 上次成功检查：%@%@", course[@"upstream"], last ? DDLFormatDate(last, @"M月d日 HH:mm") : @"尚未检查", [course[@"enabled"] isEqual:@NO] ? @" · 自动检查已停用" : @""] : @"所有课程的发现结果集中在这里";
@@ -458,7 +472,10 @@ static NSButton *SSButton(NSString *text, id target, SEL action, NSRect frame) {
         for (NSDictionary *task in self.tasksProvider ? self.tasksProvider() : @[]) if ([task[@"sourceID"] isEqual:record[@"id"]]) { copy[@"existingTask"] = task; break; }
         [reviewRecords addObject:copy];
     }
-    self.reviewWorkspace.paused = self.busy || self.operationsPaused;
+    NSMutableArray *jobs=NSMutableArray.array;for(NSString *key in self.skillJobs){NSMutableDictionary *row=[self.skillJobs[key] mutableCopy];row[@"id"]=key;[jobs addObject:row];}[jobs sortUsingComparator:^NSComparisonResult(NSDictionary *a,NSDictionary *b){return [b[@"date"] compare:a[@"date"]];}];[self.skillJobsController updateRecords:jobs busy:self.busy || self.operationsPaused];
+    self.scanButton.toolTip=self.busy ? @"已有课程操作正在执行，请等待完成或取消安全读取。":(!local && !anyLocal ? @"先关联或下载课程文件夹，再检查新作业。":@"只读取老师内容，不合并或推送。");
+    self.syncButton.toolTip=self.connected && local ? @"合并老师更新，再安全更新个人 fork。":@"需要登录并关联本地课程文件夹。";self.commitButton.toolTip=self.syncButton.toolTip;
+    self.reviewWorkspace.paused = self.operationsPaused;
     if (self.inbox) [self.reviewWorkspace updateRecords:reviewRecords];
     NSString *selectedID = self.selectedCandidateID; NSPoint scrollPosition = self.table.enclosingScrollView.contentView.bounds.origin;
     [self.table reloadData]; [self.table deselectAll:nil];
@@ -494,6 +511,7 @@ static NSButton *SSButton(NSString *text, id target, SEL action, NSRect frame) {
     [self layoutContent]; self.refreshing = NO;
     if (self.stateChanged) self.stateChanged();
 }
+- (void)cancelReadOperation:(id)sender {if(self.busy && self.git.readsCancellable){self.git.cancelledReads=YES;self.cancelReadButton.enabled=NO;[self status:@"正在取消检查；等待当前安全读取结束…"];} }
 - (void)status:(NSString *)message { if(self.busy)self.operationPhase=message; self.statuses[self.statusFork ?: self.selectedFork ?: @"all"] = message ?: @""; [self refreshPresentation]; }
 - (void)showError:(NSError *)error { if (error) {self.errorDetails[self.statusFork ?: self.selectedFork ?: @"all"]=SSRedactedText(error.userInfo[@"SSDetail"] ?: error.localizedDescription);[self status:[@"⚠ " stringByAppendingString:error.localizedDescription]];} }
 - (void)work:(NSString *)message operation:(id (^)(NSError **))operation completion:(void (^)(id, NSError *))completion {
@@ -502,10 +520,12 @@ static NSButton *SSButton(NSString *text, id target, SEL action, NSRect frame) {
 - (void)work:(NSString *)message forCourse:(NSDictionary *)course operation:(id (^)(NSError **))operation completion:(void (^)(id, NSError *))completion {
     if (self.preview) { [self status:@"模拟预览不会操作真实账户或仓库"]; return; }
     if (self.busy || (self.operationsPaused && !self.allowingExitSubmission)) return;
+    NSDate *started=NSDate.date;self.git.cancelledReads=NO;self.git.readsCancellable=[message containsString:@"扫描"] || [message containsString:@"准备中"] || [message containsString:@"核验中"] || [message containsString:@"读取个人"] || [message containsString:@"读取冲突"];self.cancelReadButton.enabled=YES;SSDiagnostic(@"operation",@"started",0);
     self.busy = YES;self.operationKind=message;self.operationPhase=message; self.workGeneration++; NSUInteger generation = self.workGeneration; NSString *target = course[@"fork"]; self.operationFork = target; self.statusFork = target; [self.progress startAnimation:nil]; [self status:message];
     dispatch_async(self.queue, ^{
         NSError *error = nil; id value = operation(&error);
         dispatch_async(dispatch_get_main_queue(), ^{
+            BOOL cancelled=self.git.cancelledReads;self.git.readsCancellable=NO;self.git.cancelledReads=NO;SSDiagnostic(@"operation",cancelled ? @"cancelled":(error ? @"failed":@"success"),-started.timeIntervalSinceNow);
             self.busy = NO; [self.progress stopAnimation:nil]; self.statusFork = target;
             completion(value, error); if (self.workGeneration == generation) { self.statusFork = nil; self.operationFork = nil; } [self refreshPresentation];
             if (self.operationStateChanged) self.operationStateChanged();
@@ -625,7 +645,7 @@ static NSButton *SSButton(NSString *text, id target, SEL action, NSRect frame) {
             dispatch_async(dispatch_get_main_queue(),^{self.operationFork=course[@"fork"];self.statusFork=course[@"fork"];[self status:@"获取老师内容并进行规则识别…"];});
             NSError *scanError = nil;
             NSDictionary *scan = [self.git scanCourse:course cache:cache error:&scanError];
-            if(scan){NSDictionary *rules=scan;dispatch_async(dispatch_get_main_queue(),^{self.candidates[course[@"fork"]]=[self retainingSkill:self.candidates[course[@"fork"]] current:rules[@"candidates"] documents:rules[@"documents"]];self.materials[course[@"fork"]]=[self retainingSkill:self.materials[course[@"fork"]] current:rules[@"materials"] documents:rules[@"documents"]];[self status:[SSCourseRecognitionSettings(recognitionSettings,course)[@"mode"] isEqual:@"rules"] ? @"规则结果已显示，正在整理结果…":@"规则结果已显示，正在补充模型分析…"];});
+            if(scan){NSDictionary *rules=scan;dispatch_async(dispatch_get_main_queue(),^{if(self.hasUnsavedReview)return;self.candidates[course[@"fork"]]=[self retainingSkill:self.candidates[course[@"fork"]] current:rules[@"candidates"] documents:rules[@"documents"]];self.materials[course[@"fork"]]=[self retainingSkill:self.materials[course[@"fork"]] current:rules[@"materials"] documents:rules[@"documents"]];[self status:[SSCourseRecognitionSettings(recognitionSettings,course)[@"mode"] isEqual:@"rules"] ? @"规则结果已显示，正在整理结果…":@"规则结果已显示，正在补充模型分析…"];});
                 scan=[self.git enhanceScan:scan course:course settings:recognitionSettings paths:nil cache:cache];}
             result[course[@"fork"]] = scan ?: @{@"error":scanError.localizedDescription ?: @"扫描失败",@"detail":scanError.userInfo[@"SSDetail"] ?: scanError.localizedDescription ?: @"",@"issue":scanError.userInfo[@"SSIssue"] ?: @"git"};
         }
@@ -638,7 +658,7 @@ static NSButton *SSButton(NSString *text, id target, SEL action, NSRect frame) {
         for (NSMutableDictionary *course in self.courses) {
             NSDictionary *scan = result[course[@"fork"]]; if (!scan) continue;
             if (scan[@"error"]) { self.errorDetails[course[@"fork"]]=scan[@"detail"] ?: scan[@"error"];self.statuses[course[@"fork"]] = [@"未完成检查：" stringByAppendingString:scan[@"error"]]; [messages addObject:[NSString stringWithFormat:@"%@: %@", course[@"fork"], scan[@"error"]]]; continue; }
-            self.candidates[course[@"fork"]] = [self retainingSkill:self.candidates[course[@"fork"]] current:scan[@"candidates"] documents:scan[@"documents"]]; self.materials[course[@"fork"]] = [self retainingSkill:self.materials[course[@"fork"]] current:scan[@"materials"] ?: @[] documents:scan[@"documents"]];
+            if(self.hasUnsavedReview){if(!self.deferredScans)self.deferredScans=NSMutableDictionary.dictionary;self.deferredScans[course[@"fork"]]=scan;}else {self.candidates[course[@"fork"]] = [self retainingSkill:self.candidates[course[@"fork"]] current:scan[@"candidates"] documents:scan[@"documents"]]; self.materials[course[@"fork"]] = [self retainingSkill:self.materials[course[@"fork"]] current:scan[@"materials"] ?: @[] documents:scan[@"documents"]];}
             NSUInteger exams=0,classroom=0,unknown=0;for(NSDictionary *material in scan[@"materials"]){if([material[@"kind"] isEqual:@"exam"])exams++;else if([material[@"kind"] isEqual:@"classroom"])classroom++;else unknown++;}
             self.statuses[course[@"fork"]]=[NSString stringWithFormat:@"%@；%lu 组考试，%lu 项课上任务，%lu 项待确认类型，%lu 个文件跳过",[scan[@"candidates"] count] ? [NSString stringWithFormat:@"发现 %lu 项课后作业",[scan[@"candidates"] count]]:@"未发现课后作业",(unsigned long)exams,(unsigned long)classroom,(unsigned long)unknown,[scan[@"skipped"] count]];
             if([recognitionSettings[@"mode"] isEqual:@"local"] && scan[@"modelCompleted"]){SSWritePlist(@"recognition-last-result.plist",@{@"course":course[@"fork"],@"date":NSDate.date,@"model":recognitionSettings[@"model"] ?: @"",@"success":scan[@"modelCompleted"]},NULL);}

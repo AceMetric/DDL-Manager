@@ -36,6 +36,7 @@ static NSArray *NonemptyParts(NSString *value, NSString *separator) {
     NSDictionary *phases = @{@"fetch":@"正在获取仓库更新…", @"clone":@"正在下载课程仓库…", @"ls-tree":@"正在读取作业文档…", @"merge":@"正在合并老师更新…", @"commit":@"正在保存所选文件的提交…", @"push":@"正在推送到个人仓库…"};
     NSUInteger commandIndex = 0; while (commandIndex + 1 < arguments.count && [arguments[commandIndex] isEqual:@"-c"]) commandIndex += 2;
     NSString *phase = commandIndex < arguments.count ? phases[arguments[commandIndex]] : nil; if (self.progress && phase) self.progress(phase);
+    if(self.readsCancellable && self.cancelledReads){if(error)*error=GitError(@"检查已取消，已有结果保留。");return nil;}
     NSTask *task = NSTask.new;
     task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/git"];
     NSMutableArray *args = [@[@"-c", @"core.hooksPath=/dev/null", @"-c", @"protocol.ext.allow=never", @"-c", @"http.followRedirects=false", @"-c", @"core.askPass=/usr/bin/false", @"-c", @"commit.gpgSign=false", @"-c", @"tag.gpgSign=false", @"-c", @"credential.helper=", @"-c", @"credential.useHttpPath=true"] mutableCopy];
@@ -66,8 +67,10 @@ static NSArray *NonemptyParts(NSString *value, NSString *separator) {
     __block NSData *errorData;
     dispatch_group_async(reading, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ errorData = [diagnostic.fileHandleForReading readDataToEndOfFile]; });
     dispatch_source_t timeout = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
-    dispatch_source_set_timer(timeout, dispatch_time(DISPATCH_TIME_NOW, 90 * NSEC_PER_SEC), DISPATCH_TIME_FOREVER, 0);
-    dispatch_source_set_event_handler(timeout, ^{ if (task.running) { [task terminate]; kill(task.processIdentifier, SIGKILL); } });
+    BOOL safeToStop=[@[@"fetch",@"ls-tree",@"show",@"blame",@"log",@"cat-file",@"rev-parse",@"status",@"diff",@"ls-files",@"ls-remote",@"check-ref-format"] containsObject:arguments[commandIndex]];
+    NSDate *launched=NSDate.date;
+    dispatch_source_set_timer(timeout,dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),NSEC_PER_SEC,0);
+    dispatch_source_set_event_handler(timeout, ^{ if(safeToStop && task.running && (-launched.timeIntervalSinceNow>90 || (self.readsCancellable && self.cancelledReads))){[task terminate];kill(task.processIdentifier,SIGKILL);} });
     dispatch_resume(timeout);
     NSData *data = [output.fileHandleForReading readDataToEndOfFile];
     [task waitUntilExit]; dispatch_source_cancel(timeout);

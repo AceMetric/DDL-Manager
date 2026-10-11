@@ -28,6 +28,7 @@
 ```sh
 zsh build.sh
 zsh test.sh
+zsh verify-quality.sh
 zsh verify-import.sh
 zsh verify-homework.sh
 zsh verify-forms.sh
@@ -57,7 +58,7 @@ zsh release.sh --candidate
 
 脚本依次构建、测试、校验签名、扫描历史与产物，然后生成 `build/releases/AM-Homework-Helper-<版本>-macOS-arm64-candidate.zip` 和校验文件。ZIP 仅包含应用，安装说明单独生成；不包含任务数据库、登录信息或开发计划。
 
-`zsh release.sh` 生成不带 candidate 后缀的本机包，要求配置公开 OAuth Client ID。它仍不会上传 GitHub Release，也不完成 Developer ID 签名或 Apple 公证。当前 1.3.1 的构建号为 7，后续更新必须递增。签名清单及真实升级验证见 [软件更新与本机发布](UPDATES.md)。
+`zsh release.sh` 生成不带 candidate 后缀的本机包，使用内置官方 GitHub CLI 登录配置。它仍不会上传 GitHub Release，也不完成 Developer ID 签名或 Apple 公证。版本与构建号以 Info.plist 为唯一依据，后续更新必须递增。签名清单及真实升级验证见 [软件更新与本机发布](UPDATES.md)。
 
 ## 为本项目贡献
 
@@ -70,3 +71,5 @@ zsh release.sh --candidate
 PR 不需要向接收仓库直接 push。提交代码后由本项目维护者审阅并决定是否合并。向原作者贡献应另行与原作者讨论。
 
 SwiftUI 通过 `Tools/prepare-swiftui.py` 编译为应用内 `libAMUI.dylib`，生成 Objective-C 桥接头；目标保持 macOS 13，依赖系统 Swift 运行库。后台结果在主线程送入视图，业务保存与 Git 操作仍只有现有应用入口。不要引入第二个主窗口或任务库。识别公开测试不得包含真实课程原文，详细配置见 [识别说明](RECOGNITION.md)。
+
+质量回归：`AM_UI_TEST=QualityUsage zsh verify-hybrid-ui.sh` 使用2000项任务及20门模拟课程检查启动、列表虚拟化、搜索和选择耗时。任务恢复点仅在本机；诊断导出先预览，无遥测。通知送达、同学可用性及最低系统实机结果须单独记录。

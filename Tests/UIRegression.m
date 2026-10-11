@@ -43,7 +43,8 @@ int main(int argc, const char *argv[]) {
         Search(app, @"  英语  ");
         CheckUI(!first.valid && app.searchTimer.valid, @"successive searches cancel pending refresh");
         CheckUI([app.query isEqual:@"英语"], @"search trims whitespace");
-        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.25]];
+        NSDate *searchLimit=[NSDate dateWithTimeIntervalSinceNow:2];
+        while(app.searchTimer && searchLimit.timeIntervalSinceNow>0)[NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
         CheckUI(app.searchTimer == nil && app.overviewSnapshot.count == 3, @"debounced search applies latest query");
         CheckUI(app.yearPicker == yearPicker, @"search preserves month controls");
         Search(app, @"");

@@ -555,8 +555,9 @@ private struct SettingsWorkspace:View {
                     }.padding(8).frame(maxWidth:.infinity,alignment:.leading)
                 }
                 WorkspaceSection("助手识别 · Skill") {VStack(alignment:.leading,spacing:12){Text("准备多门课程的新材料，复制指令交给助手；结果自动接回待审核，无需手动导入。").foregroundStyle(.secondary);HStack{Button("助手识别"){state.action?("skill-export")}.buttonStyle(.borderedProminent);Button("批次与进度…"){state.action?("skill-status")};Spacer()};DisclosureGroup("课程与兼容操作"){HStack{Button("调整课程…"){state.action?("skill-courses")};Button("重新分析全部…"){state.action?("skill-all")};Button("手动导入…"){state.action?("skill-import")}}};Text("不会自动发送老师原文或启动付费分析。").font(.caption).foregroundStyle(.secondary)}}
-                WorkspaceSection("账户与提醒") {HStack{Button("GitHub 账户…"){state.action?("account")};Button("提醒设置与测试…"){state.action?("notifications")};Spacer()}.padding(8)}
+                WorkspaceSection("账户与提醒") {HStack{Button("GitHub 账户…"){state.action?("account")};Button("提醒设置与测试…"){state.action?("notifications")};Button("排查提醒…"){state.action?("notification-help")};Spacer()}.padding(8)}
                 WorkspaceSection("软件更新") {HStack{Button("检查更新…"){state.action?("check-update")};Button("自动检查设置…"){state.action?("updates")};Spacer()}.padding(8)}
+                WorkspaceSection("数据与反馈"){HStack{Button("恢复任务…"){state.action?("recovery")};Button("诊断与反馈…"){state.action?("diagnostics")};Spacer()}}
                 DisclosureGroup("高级设置") {Button("GitHub 登录与兼容设置…"){state.action?("advanced")}.padding(.top,8)}
                 HStack{Spacer();Button("完成"){state.action?("close")}.keyboardShortcut(.cancelAction)}
             }.padding(24)
@@ -817,4 +818,36 @@ private struct SetupWorkspace:View {
     @objc public func updateRecords(_ records:[NSDictionary],step:Int,busy:Bool,message:String){state.update(records,step:step,busy:busy,message:message)}
     @objc public func updateContext(_ context:NSDictionary){state.context=context;if let selected=context["selected"] as? [String]{state.selected=Set(selected)}}
     public override func loadView(){view=NSHostingView(rootView:SetupWorkspace(state:state))}
+}
+
+@MainActor private final class SkillJobsState:ObservableObject {
+    @Published var records=[NSDictionary]()
+    @Published var busy=false
+    var action:((String,String)->Void)?
+}
+private struct SkillJobsWorkspace:View {
+    @ObservedObject var state:SkillJobsState
+    var body:some View {
+        VStack(alignment:.leading,spacing:16){
+            HStack{Text("助手识别批次").font(.title2.bold());Spacer();Button("清理已完成材料"){state.action?("clean","")}.disabled(state.busy);Button("返回课程"){state.action?("close","")}}
+            Text("等待助手期间可以继续使用。接回后仍需审核；重试只准备尚未成功的材料。").foregroundStyle(.secondary)
+            if state.records.isEmpty {VStack(spacing:12){Image(systemName:"tray").font(.largeTitle);Text("暂无识别批次");Button("准备课程材料"){state.action?("prepare","")}}.frame(maxWidth:.infinity,maxHeight:.infinity)}
+            else {List(workspaceRows(state.records,key:"id")){row in
+                let record=row.record, key=string(record,"id"), status=string(record,"state")
+                VStack(alignment:.leading,spacing:8){
+                    HStack{Label(status,systemImage:status=="已接回" ? "checkmark.circle":(status=="需处理" ? "exclamationmark.triangle":"clock"));Spacer();if let date=record["date"] as? Date {Text(date,style:.date).foregroundStyle(.secondary)}}
+                    Text("\((record["count"] as? NSNumber)?.intValue ?? 0) 份文档 · \((record["courses"] as? [String] ?? []).map{String($0.split(separator:"/").last ?? "")}.joined(separator:"、"))").font(.caption).foregroundStyle(.secondary)
+                    if !string(record,"message").isEmpty {Text(string(record,"message")).textSelection(.enabled)}
+                    if flag(record,"cleaned"){Text("材料已清理；识别进度仍保留").font(.caption).foregroundStyle(.secondary)}
+                    HStack{if !flag(record,"cleaned"){Button("复制指令"){state.action?("copy",key)};Button("显示材料"){state.action?("reveal",key)}};if status=="需处理" {Button("重试接回"){state.action?("retry",key)};Button("重新准备未成功材料"){state.action?("prepare-failed",key)}}}.disabled(state.busy)
+                }.padding(.vertical,8)
+            }.listStyle(.inset)}
+        }.padding(16).font(.system(size:13)).background(Color(nsColor:AMAppearance.canvas)).tint(Color(nsColor:AMAppearance.accent))
+    }
+}
+@objc(AMSkillJobsController) @MainActor public final class AMSkillJobsController:NSViewController {
+    private let state=SkillJobsState()
+    @objc public var actionHandler:((String,String)->Void)? {get{state.action}set{state.action=newValue}}
+    @objc public func updateRecords(_ records:[NSDictionary],busy:Bool){state.records=records;state.busy=busy}
+    public override func loadView(){view=NSHostingView(rootView:SkillJobsWorkspace(state:state))}
 }
